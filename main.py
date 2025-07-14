@@ -83,10 +83,30 @@ def handle_go(message):
         'correct': 0,
         'wrong': 0,
         'vocab_slice': vocab_slice,
-        'current_question': None
+        'current_question': None,
+        'mute': False,
+        'user_messages': []
     }
 
     send_next_question(chat_id)
+
+@bot.message_handler(commands=['mute'])
+def handle_mute(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        user_data[chat_id] = {'mute': True}
+    else:
+        user_data[chat_id]['mute'] = True
+    bot.reply_to(message, "🔇 Đã tắt chế độ phát âm.")
+
+@bot.message_handler(commands=['unmute'])
+def handle_unmute(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        user_data[chat_id] = {'mute': False}
+    else:
+        user_data[chat_id]['mute'] = False
+    bot.reply_to(message, "🔊 Đã bật lại chế độ phát âm.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_answer(call):
@@ -123,16 +143,23 @@ def handle_answer(call):
                           parse_mode='Markdown',
                           disable_web_page_preview=True)
 
-    # Gửi giọng đọc từ
-    try:
-        tts = gTTS(text=word_en, lang='en')
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
-            tts.save(tmp.name)
-            bot.send_chat_action(chat_id, 'upload_audio')
-            bot.send_voice(chat_id, voice=open(tmp.name, 'rb'))
-        os.unlink(tmp.name)
-    except Exception as e:
-        bot.send_message(chat_id, f"Không thể phát âm từ `{word_en}`. Lỗi: {e}", parse_mode='Markdown')
+    # Nếu chưa bị tắt tiếng, phát âm từ
+    if not data.get('mute', False):
+        try:
+            tts = gTTS(text=word_en, lang='en')
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
+                tts.save(tmp.name)
+                msg = bot.send_voice(chat_id, voice=open(tmp.name, 'rb'))
+            os.unlink(tmp.name)
+            data['user_messages'].append(msg.message_id)
+            if len(data['user_messages']) > 10:
+                old_msg_id = data['user_messages'].pop(0)
+                try:
+                    bot.delete_message(chat_id, old_msg_id)
+                except:
+                    pass
+        except Exception as e:
+            bot.send_message(chat_id, f"Không thể phát âm từ `{word_en}`. Lỗi: {e}", parse_mode='Markdown')
 
     send_next_question(chat_id)
 
