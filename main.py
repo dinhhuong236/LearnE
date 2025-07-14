@@ -1,34 +1,27 @@
+
 from keep_alive import keep_alive
 keep_alive()
+
 import telebot
 import os
-
-# Nhập token từ bàn phím
-API_KEY = os.getenv("B_API")
-#input("Nhập API Token của bot Telegram: ").strip()
-
-import telebot
 import random
+from gtts import gTTS
+import tempfile
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-
+API_KEY = os.getenv("B_API")
 bot = telebot.TeleBot(API_KEY)
 
 @bot.message_handler(commands=['start'])
 def greet(message):
     bot.reply_to(message, "Chào bạn! Tôi đang hoạt động.")
 
-
-
-
 # Load vocab
 with open('vocabulary.txt', encoding='utf-8') as f:
     lines = [line.strip() for line in f if '|' in line]
 vocab = [tuple(line.split('|')) for line in lines]
 
-
-
-# Lưu thông tin từng người dùng: câu đúng/sai, đáp án
+# Lưu thông tin từng người dùng
 user_data = {}
 
 # Gửi một câu hỏi
@@ -45,7 +38,6 @@ def create_question(user_id, vocab_slice):
     for idx, meaning in enumerate(meanings):
         keyboard.add(InlineKeyboardButton(meaning, callback_data=str(idx)))
 
-    # Lưu trạng thái câu hỏi
     user_data[user_id]['current_question'] = {
         'word': correct[0],
         'meanings': meanings,
@@ -54,7 +46,7 @@ def create_question(user_id, vocab_slice):
 
     return correct[0], keyboard
 
-# Hàm gửi tin nhắn kết quả + câu hỏi tiếp theo
+# Gửi câu tiếp theo
 def send_next_question(chat_id):
     data = user_data[chat_id]
     vocab_slice = data['vocab_slice']
@@ -65,13 +57,10 @@ def send_next_question(chat_id):
                      reply_markup=keyboard,
                      parse_mode='Markdown')
 
-# Bắt đầu kiểm tra: /go hoặc /go 20-30
 @bot.message_handler(commands=['go'])
 def handle_go(message):
     chat_id = message.chat.id
     args = message.text.strip().split()
-
-    # Mặc định: dùng toàn bộ vocab
     vocab_slice = vocab
 
     if len(args) == 2 and '-' in args[1]:
@@ -90,7 +79,6 @@ def handle_go(message):
         bot.reply_to(message, "❗ Cần ít nhất 4 từ để tạo câu hỏi.")
         return
 
-    # Khởi tạo dữ liệu người dùng
     user_data[chat_id] = {
         'correct': 0,
         'wrong': 0,
@@ -100,7 +88,6 @@ def handle_go(message):
 
     send_next_question(chat_id)
 
-# Xử lý chọn đáp án
 @bot.callback_query_handler(func=lambda call: True)
 def handle_answer(call):
     chat_id = call.message.chat.id
@@ -112,33 +99,41 @@ def handle_answer(call):
 
     selected_index = int(call.data)
     q = data['current_question']
-    word = q['word']
+    word_full = q['word']
+    word_en = word_full.split('/')[0].strip()
     meanings = q['meanings']
     correct_index = q['correct_index']
     correct_meaning = meanings[correct_index]
 
     if selected_index == correct_index:
         data['correct'] += 1
-        result = f"✅ *Chính xác!*\nTừ: `{word}`\nNghĩa đúng: `{correct_meaning}`"
+        result = f"✅ *Chính xác!*\nTừ: `{word_full}`\nNghĩa đúng: `{correct_meaning}`"
     else:
         data['wrong'] += 1
         selected_meaning = meanings[selected_index]
-        result = f"❌ *Sai rồi!*\nTừ: `{word}`\nBạn chọn: `{selected_meaning}`\nĐúng là: `{correct_meaning}`"
+        result = f"❌ *Sai rồi!*\nTừ: `{word_full}`\nBạn chọn: `{selected_meaning}`\nĐúng là: `{correct_meaning}`"
 
     total = data['correct'] + data['wrong']
     percent = round(data['correct'] / total * 100, 2) if total else 0.0
     score_text = f"\n📊 Kết quả: {data['correct']} đúng / {data['wrong']} sai ({percent}%)"
 
-    # Gửi kết quả và câu tiếp theo
     bot.edit_message_text(chat_id=chat_id,
                           message_id=call.message.message_id,
                           text=result + score_text,
-                          parse_mode='Markdown')
+                          parse_mode='Markdown',
+                          disable_web_page_preview=True)
+
+    # Gửi giọng đọc từ
+    try:
+        tts = gTTS(text=word_en, lang='en')
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp:
+            tts.save(tmp.name)
+            bot.send_chat_action(chat_id, 'upload_audio')
+            bot.send_voice(chat_id, voice=open(tmp.name, 'rb'))
+        os.unlink(tmp.name)
+    except Exception as e:
+        bot.send_message(chat_id, f"Không thể phát âm từ `{word_en}`. Lỗi: {e}", parse_mode='Markdown')
+
     send_next_question(chat_id)
 
 bot.infinity_polling()
-
-
-
-
-
