@@ -1,4 +1,3 @@
-
 from keep_alive import keep_alive
 keep_alive()
 
@@ -12,22 +11,48 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 API_KEY = os.getenv("B_API")
 bot = telebot.TeleBot(API_KEY)
 
-@bot.message_handler(commands=['start'])
-def greet(message):
-    bot.reply_to(message, "Chào bạn! Tôi đang hoạt động.")
-
-# Load vocab
+# Load vocab từ file
 with open('vocabulary.txt', encoding='utf-8') as f:
     lines = [line.strip() for line in f if '|' in line]
 vocab = [tuple(line.split('|')) for line in lines]
 
-# Lưu thông tin từng người dùng
+# Lưu thông tin người dùng
 user_data = {}
 
-# Gửi một câu hỏi
-def create_question(user_id, vocab_slice):
-    correct = random.choice(vocab_slice)
-    distractors = random.sample([v for v in vocab_slice if v != correct], 3)
+# Gửi 1 câu hỏi
+def create_question(user_id):
+    data = user_data[user_id]
+    usage = data['usage']
+    vocab_slice = data['vocab_slice']
+    priority_weight = data.get('priority_weight', 2)
+
+    # Tạo danh sách câu hỏi có thể chọn (ưu tiên chưa hiện nhiều hoặc trả lời sai)
+    weighted_vocab = []
+    for idx, word in enumerate(vocab_slice):
+        count = usage.get(idx, 0)
+        weight = max(0, 2 - count)  # Chỉ xuất hiện tối đa 2 lần mỗi chu kỳ
+        if weight > 0:
+            weighted_vocab += [idx] * weight
+
+        # Nếu có ưu tiên sai
+        if data.get("priority") and idx in data.get("wrong_counts", {}):
+            wrongs = data["wrong_counts"][idx]
+            weighted_vocab += [idx] * (priority_weight * wrongs)
+
+    if len(weighted_vocab) < 4:
+        # Reset chu kỳ
+        data['usage'] = {}
+        for idx in range(len(vocab_slice)):
+            data['usage'][idx] = 0
+        return create_question(user_id)
+
+    # Chọn từ đúng
+    correct_idx = random.choice(weighted_vocab)
+    correct = vocab_slice[correct_idx]
+    data['usage'][correct_idx] = data['usage'].get(correct_idx, 0) + 1
+
+    # Chọn 3 đáp án sai
+    distractors = random.sample([v for i, v in enumerate(vocab_slice) if i != correct_idx], 3)
     all_options = [correct] + distractors
     random.shuffle(all_options)
 
@@ -38,7 +63,8 @@ def create_question(user_id, vocab_slice):
     for idx, meaning in enumerate(meanings):
         keyboard.add(InlineKeyboardButton(meaning, callback_data=str(idx)))
 
-    user_data[user_id]['current_question'] = {
+    data['current_question'] = {
+        'correct_idx': correct_idx,
         'word': correct[0],
         'meanings': meanings,
         'correct_index': correct_index
@@ -48,10 +74,7 @@ def create_question(user_id, vocab_slice):
 
 # Gửi câu tiếp theo
 def send_next_question(chat_id):
-    data = user_data[chat_id]
-    vocab_slice = data['vocab_slice']
-    word, keyboard = create_question(chat_id, vocab_slice)
-
+    word, keyboard = create_question(chat_id)
     bot.send_message(chat_id,
                      f"🔤 *Từ tiếng Anh:* `{word}`\n\nChọn nghĩa đúng:",
                      reply_markup=keyboard,
@@ -71,7 +94,7 @@ def handle_go(message):
             vocab_slice = vocab[start-1:end]
         except:
             bot.reply_to(message,
-                         f"❗ Khoảng dòng không hợp lệ. Hãy nhập lại lệnh như: `/go 20-30`\nChọn trong khoảng 1–{len(vocab)}.",
+                         f"❗ Khoảng dòng không hợp lệ. Hãy nhập: `/go 20-30` (1–{len(vocab)})",
                          parse_mode="Markdown")
             return
 
@@ -83,30 +106,52 @@ def handle_go(message):
         'correct': 0,
         'wrong': 0,
         'vocab_slice': vocab_slice,
+        'usage': {},  # Số lần hiển thị mỗi từ
+        'wrong_counts': {},  # Số lần trả lời sai
         'current_question': None,
         'mute': False,
+        'priority': False,
+        'priority_weight': 2,
         'user_messages': []
     }
 
     send_next_question(chat_id)
 
+@bot.message_handler(commands=['priority'])
+def enable_priority(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        return bot.reply_to(message, "Bạn cần dùng lệnh /go trước.")
+    args = message.text.strip().split()
+    weight = 2
+    if len(args) == 2 and args[1].isdigit():
+        weight = int(args[1])
+    user_data[chat_id]['priority'] = True
+    user_data[chat_id]['priority_weight'] = weight
+    bot.reply_to(message, f"📌 Ưu tiên từ sai đã được bật (mức độ: {weight})")
+
+@bot.message_handler(commands=['nopriority'])
+def disable_priority(message):
+    chat_id = message.chat.id
+    if chat_id in user_data:
+        user_data[chat_id]['priority'] = False
+    bot.reply_to(message, "🚫 Đã tắt ưu tiên từ sai.")
+
 @bot.message_handler(commands=['mute'])
 def handle_mute(message):
     chat_id = message.chat.id
     if chat_id not in user_data:
-        user_data[chat_id] = {'mute': True}
-    else:
-        user_data[chat_id]['mute'] = True
-    bot.reply_to(message, "🔇 Đã tắt chế độ phát âm.")
+        user_data[chat_id] = {}
+    user_data[chat_id]['mute'] = True
+    bot.reply_to(message, "🔇 Đã tắt phát âm.")
 
 @bot.message_handler(commands=['unmute'])
 def handle_unmute(message):
     chat_id = message.chat.id
     if chat_id not in user_data:
-        user_data[chat_id] = {'mute': False}
-    else:
-        user_data[chat_id]['mute'] = False
-    bot.reply_to(message, "🔊 Đã bật lại chế độ phát âm.")
+        user_data[chat_id] = {}
+    user_data[chat_id]['mute'] = False
+    bot.reply_to(message, "🔊 Đã bật phát âm.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_answer(call):
@@ -119,6 +164,7 @@ def handle_answer(call):
 
     selected_index = int(call.data)
     q = data['current_question']
+    correct_idx = q['correct_idx']
     word_full = q['word']
     word_en = word_full.split('/')[0].strip()
     meanings = q['meanings']
@@ -132,6 +178,7 @@ def handle_answer(call):
         data['wrong'] += 1
         selected_meaning = meanings[selected_index]
         result = f"❌ *Sai rồi!*\nTừ: `{word_full}`\nBạn chọn: `{selected_meaning}`\nĐúng là: `{correct_meaning}`"
+        data['wrong_counts'][correct_idx] = data['wrong_counts'].get(correct_idx, 0) + 1
 
     total = data['correct'] + data['wrong']
     percent = round(data['correct'] / total * 100, 2) if total else 0.0
@@ -143,7 +190,7 @@ def handle_answer(call):
                           parse_mode='Markdown',
                           disable_web_page_preview=True)
 
-    # Nếu chưa bị tắt tiếng, phát âm từ
+    # Gửi voice nếu không mute
     if not data.get('mute', False):
         try:
             tts = gTTS(text=word_en, lang='en')
@@ -159,7 +206,7 @@ def handle_answer(call):
                 except:
                     pass
         except Exception as e:
-            bot.send_message(chat_id, f"Không thể phát âm từ `{word_en}`. Lỗi: {e}", parse_mode='Markdown')
+            bot.send_message(chat_id, f"Không thể phát âm từ `{word_en}`.\nLỗi: {e}", parse_mode="Markdown")
 
     send_next_question(chat_id)
 
