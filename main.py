@@ -56,10 +56,26 @@ def handle_go(message):
         'show_count': defaultdict(int),
         'target_count': defaultdict(lambda: 1),
         'recent_words': deque([], maxlen=5),
-        'priority_weight': 2
+        'priority_weight': 2,
+        'sentence_count': 3,
+        'sentence_level': 0
     }
 
     send_next_question(chat_id)
+
+@bot.message_handler(commands=['setsentence'])
+def set_sentence_param(message):
+    chat_id = message.chat.id
+    args = message.text.strip().split()
+    if len(args) != 3 or not args[1].isdigit() or not args[2] in ['0', '1']:
+        bot.reply_to(message, "❗ Dùng: /setsentence a b
+Trong đó a: số câu, b: 0 (dễ) hoặc 1 (khó)")
+        return
+    a = int(args[1])
+    b = int(args[2])
+    user_data.setdefault(chat_id, {})['sentence_count'] = a
+    user_data.setdefault(chat_id, {})['sentence_level'] = b
+    bot.reply_to(message, f"📘 Đã đặt số câu ví dụ: {a}, độ khó: {b}")
 
 @bot.message_handler(commands=['mute'])
 def handle_mute(message):
@@ -89,6 +105,24 @@ def handle_nopriority(message):
     user_data.setdefault(chat_id, {})['priority_weight'] = 0
     bot.reply_to(message, "❌ Đã tắt ưu tiên sai.")
 
+def extract_sentences(word, folder='dataset', count=5, level=0):
+    import heapq
+    results = []
+    files = sorted([
+        f for f in os.listdir(folder)
+        if f.startswith("sentences_data_") and f.endswith(".tsv")
+    ], key=lambda x: int(x.replace("sentences_data_", "").replace(".tsv", "")), reverse=(level == 1))
+
+    for file in files:
+        with open(os.path.join(folder, file), encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) >= 3 and word.lower() in parts[2].lower():
+                    heapq.heappush(results, (len(parts[2].split()), parts[2]))
+                    if len(results) > count:
+                        heapq.heappop(results)
+    return [s for _, s in sorted(results)]
+
 def create_question(user_id, vocab_slice):
     data = user_data[user_id]
     show_count = data['show_count']
@@ -117,6 +151,7 @@ def create_question(user_id, vocab_slice):
     keyboard = InlineKeyboardMarkup()
     for idx, meaning in enumerate(meanings):
         keyboard.add(InlineKeyboardButton(meaning, callback_data=str(idx)))
+    keyboard.add(InlineKeyboardButton("📘 Show usages", callback_data='show_usages'))
 
     data['current_question'] = {
         'word': correct[0],
@@ -143,6 +178,15 @@ def handle_answer(call):
         bot.answer_callback_query(call.id, "❓ Không tìm thấy câu hỏi.")
         return
 
+    if call.data == 'show_usages':
+        word_full = data['current_question']['word']
+        word_en = word_full.split('/')[0].strip()
+        samples = extract_sentences(word_en, count=data.get('sentence_count', 3), level=data.get('sentence_level', 0))
+        reply = f"📘 *Câu ví dụ chứa từ* `{word_en}`:\n\n"
+        reply += '\n'.join(f"- {s}" for s in samples) if samples else "(Không tìm thấy)"
+        bot.send_message(chat_id, reply, parse_mode='Markdown')
+        return
+
     selected_index = int(call.data)
     q = data['current_question']
     word_full = q['word']
@@ -153,7 +197,7 @@ def handle_answer(call):
 
     if selected_index == correct_index:
         data['correct'] += 1
-        result = f"✅ *Chính xác!*\nTừ: `{word_full}`\nNghĩa: `{correct_meaning}`"
+        result = f"✅ *Chính xác!\nTừ:* `{word_full}`\nNghĩa: `{correct_meaning}`"
     else:
         data['wrong'] += 1
         selected_meaning = meanings[selected_index]
@@ -185,7 +229,7 @@ def handle_answer(call):
                 except:
                     pass
         except Exception as e:
-            bot.send_message(chat_id, f"Lỗi tổng hợp: {e}")
+            bot.send_message(chat_id, f"Lỗi phát âm: {e}")
 
     send_next_question(chat_id)
 
