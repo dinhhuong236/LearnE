@@ -20,6 +20,41 @@ vocab = [tuple(line.split('|')) for line in lines]
 # Dữ liệu người dùng
 user_data = {}
 
+@bot.message_handler(commands=['help'])
+def handle_help(message):
+    help_text = (
+        "📚 *Hướng dẫn sử dụng bot học từ vựng tiếng Anh*\n\n"
+        "🟢 **Bắt đầu luyện tập:**\n"
+        "`/go 1-100` – Luyện từ vựng từ dòng 1 đến 100 trong danh sách.\n"
+        "Bạn cần chọn đúng nghĩa của từ được hỏi. Sau mỗi câu có thể xem ví dụ sử dụng.\n\n"
+
+        "🔄 **Tùy chỉnh hiển thị câu ví dụ:**\n"
+        "`/setsentence 5 0` – Hiển thị 5 câu ví dụ, độ khó 0 (dễ).\n"
+        "`/setsentence 10 1` – Hiển thị 10 câu, độ khó 1 (khó).\n\n"
+
+        "🔊 **Âm thanh:**\n"
+        "`/mute` – Tắt phát âm từ.\n"
+        "`/unmute` – Bật phát âm từ.\n\n"
+
+        "📌 **Ưu tiên các từ sai nhiều:**\n"
+        "`/priority 3` – Ưu tiên hiển thị lại các từ sai, trọng số = 3.\n"
+        "`/nopriority` – Tắt ưu tiên.\n\n"
+
+        "🔍 **Tìm câu ví dụ cho một từ hoặc cụm từ:**\n"
+        "`/find từ` – Tìm 5 câu dễ mặc định.\n"
+        "`/find từ số_câu` – Ví dụ: `/find look up 10`\n"
+        "`/find từ số_câu độ_khó` – Ví dụ: `/find look up 10 1`\n"
+        "- `độ_khó = 0`: dễ, `1`: khó\n"
+        "- Hỗ trợ tìm cả các từ có `-` hoặc có khoảng trắng như `check-in`, `check in`\n\n"
+
+        "📊 **Sau mỗi câu hỏi:**\n"
+        "- Bạn sẽ biết mình đúng/sai, kèm theo điểm số.\n"
+        "- Có thể xem thêm câu ví dụ bằng nút 📘 *Show usages*.\n\n"
+
+        "Chúc bạn học từ vựng hiệu quả! 💪"
+    )
+    bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+
 @bot.message_handler(commands=['start'])
 def greet(message):
     bot.reply_to(message, "Chào bạn! Tôi đang hoạt động.")
@@ -57,7 +92,7 @@ def handle_go(message):
         'target_count': defaultdict(lambda: 1),
         'recent_words': deque([], maxlen=5),
         'priority_weight': 2,
-        'sentence_count': 3,
+        'sentence_count': 5,
         'sentence_level': 0
     }
 
@@ -68,8 +103,7 @@ def set_sentence_param(message):
     chat_id = message.chat.id
     args = message.text.strip().split()
     if len(args) != 3 or not args[1].isdigit() or not args[2] in ['0', '1']:
-        bot.reply_to(message, "❗ Dùng: /setsentence a b
-Trong đó a: số câu, b: 0 (dễ) hoặc 1 (khó)")
+        bot.reply_to(message, "❗ Dùng: /setsentence a b Trong đó a: số câu, b: 0 (dễ) hoặc 1 (khó)")
         return
     a = int(args[1])
     b = int(args[2])
@@ -104,24 +138,87 @@ def handle_nopriority(message):
     chat_id = message.chat.id
     user_data.setdefault(chat_id, {})['priority_weight'] = 0
     bot.reply_to(message, "❌ Đã tắt ưu tiên sai.")
+@bot.message_handler(commands=['find'])
+def handle_find(message):
+    chat_id = message.chat.id
+    args = message.text.strip().split()
+
+    if len(args) < 2:
+        bot.reply_to(message, "❗ Dùng: `/find từ [số_câu] [độ_khó]`\nVí dụ: `/find look up 10 1`", parse_mode="Markdown")
+        return
+
+    try:
+        # Kiểm tra nếu có độ khó ở cuối
+        level = int(args[-1]) if args[-1] in ['0', '1'] else 0
+        count = int(args[-2]) if args[-2].isdigit() else 5
+        word_parts = args[1:-2] if args[-2].isdigit() and args[-1] in ['0', '1'] else \
+                     args[1:-1] if args[-1].isdigit() else \
+                     args[1:]
+
+        word = ' '.join(word_parts).strip()
+    except Exception as e:
+        bot.reply_to(message, f"❗ Cú pháp sai. Dùng: `/find từ [số_câu] [độ_khó]`", parse_mode="Markdown")
+        return
+
+    samples = extract_sentences(word, count=count, level=level)
+    reply = f"📘 *Câu ví dụ chứa từ* `{word}`:\n\n"
+    reply += '\n'.join(f"- {s}" for s in samples) if samples else "(Không tìm thấy)"
+    bot.send_message(chat_id, reply, parse_mode='Markdown')
+
+
+
+import requests
+
+# def extract_sentences(word, count=5, level=0):
+#     """
+#     Lấy câu ví dụ từ API của Tatoeba cho từ tiếng Anh `word`.
+#     `count`: số câu muốn lấy.
+#     """
+#     try:
+#         url = f"https://tatoeba.org/eng/api_v0/search?query={word}&from=eng&orphans=no&unapproved=no&native=no&has_audio=no&sort=relevance"
+#         response = requests.get(url, timeout=5)
+#         data = response.json()
+#         results = [item["text"] for item in data.get("results", []) if word.lower() in item["text"].lower()]
+#         return results[:count]
+#     except Exception as e:
+#         return [f"(Lỗi khi truy cập Tatoeba: {e})"]
 
 def extract_sentences(word, folder='dataset', count=5, level=0):
-    import heapq
     results = []
-    files = sorted([
-        f for f in os.listdir(folder)
-        if f.startswith("sentences_data_") and f.endswith(".tsv")
-    ], key=lambda x: int(x.replace("sentences_data_", "").replace(".tsv", "")), reverse=(level == 1))
+    filenames = sorted(
+        [f for f in os.listdir(folder) if f.startswith("sentences_data_") and f.endswith(".tsv")],
+        key=lambda x: int(x.replace("sentences_data_", "").replace(".tsv", "")),
+        reverse=(level == 1)
+    )
 
-    for file in files:
-        with open(os.path.join(folder, file), encoding='utf-8') as f:
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) >= 3 and word.lower() in parts[2].lower():
-                    heapq.heappush(results, (len(parts[2].split()), parts[2]))
-                    if len(results) > count:
-                        heapq.heappop(results)
-    return [s for _, s in sorted(results)]
+    # Tạo các biến thể của từ để kiểm tra
+    word_clean = word.strip().lower()
+    variants = set()
+    variants.add(word_clean)
+    if '-' in word_clean:
+        variants.add(word_clean.replace('-', ' '))
+    if ' ' in word_clean:
+        variants.add(word_clean.replace(' ', '-'))
+
+    for filename in filenames:
+        path = os.path.join(folder, filename)
+        try:
+            with open(path, encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3:
+                        sentence = parts[2].lower()
+                        if any(v in sentence for v in variants):
+                            results.append(parts[2])
+                            if len(results) >= count:
+                                return results
+        except Exception as e:
+            print(f"Lỗi đọc {filename}: {e}")
+
+    return results 
+
+
+#     return results  # nếu tìm được ít hơn count, vẫn trả về
 
 def create_question(user_id, vocab_slice):
     data = user_data[user_id]
@@ -181,7 +278,7 @@ def handle_answer(call):
     if call.data == 'show_usages':
         word_full = data['current_question']['word']
         word_en = word_full.split('/')[0].strip()
-        samples = extract_sentences(word_en, count=data.get('sentence_count', 3), level=data.get('sentence_level', 0))
+        samples = extract_sentences(word_en, count=data.get('sentence_count', 5), level=data.get('sentence_level', 0))
         reply = f"📘 *Câu ví dụ chứa từ* `{word_en}`:\n\n"
         reply += '\n'.join(f"- {s}" for s in samples) if samples else "(Không tìm thấy)"
         bot.send_message(chat_id, reply, parse_mode='Markdown')
