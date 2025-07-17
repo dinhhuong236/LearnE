@@ -12,13 +12,89 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 API_KEY = os.getenv("B_API")
 bot = telebot.TeleBot(API_KEY)
 
-# Load vocab
+from keep_alive import keep_alive
+keep_alive()
+
+import telebot
+import os
+import random
+import tempfile
+from gtts import gTTS
+from collections import defaultdict, deque
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+API_KEY = "7214717305:AAEupUfzprb46BFX4L3CEXDxShB8fKZNIFU"#os.getenv("B_API")
+bot = telebot.TeleBot(API_KEY)
+
+# Load vocab mặc định
 with open('vocabulary.txt', encoding='utf-8') as f:
     lines = [line.strip() for line in f if '|' in line]
-vocab = [tuple(line.split('|')) for line in lines]
+default_vocab = [tuple(line.split('|')) for line in lines]
 
 # Dữ liệu người dùng
 user_data = {}
+user_vocab = {}  # lưu vocab riêng cho từng người dùng
+
+# Hàm lấy bộ từ hiện tại
+
+def get_current_vocab(chat_id):
+    return user_vocab.get(chat_id, default_vocab)
+
+# Upload file vocab cá nhân
+@bot.message_handler(commands=['upload'])
+def handle_upload_command(message):
+    bot.reply_to(message, "📤 Gửi file từ vựng dạng TXT, mỗi dòng `từ|nghĩa`.")
+
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    chat_id = message.chat.id
+    file_info = bot.get_file(message.document.file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    try:
+        lines = downloaded.decode('utf-8').splitlines()
+        vocab_list = [tuple(line.strip().split('|')) for line in lines if '|' in line]
+        if not vocab_list:
+            raise ValueError("Không có từ hợp lệ")
+        user_vocab[chat_id] = vocab_list
+        bot.reply_to(message, f"✅ Đã cập nhật {len(vocab_list)} từ vào bộ từ cá nhân.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Lỗi xử lý file: {e}")
+
+# Quay về dùng từ mặc định
+@bot.message_handler(commands=['usedefault'])
+def handle_usedefault(message):
+    chat_id = message.chat.id
+    if chat_id in user_vocab:
+        del user_vocab[chat_id]
+        bot.reply_to(message, "🔁 Đã quay về dùng bộ từ mặc định.")
+    else:
+        bot.reply_to(message, "📄 Bạn đang dùng bộ từ mặc định rồi.")
+
+# Thêm từ vào bộ hiện tại
+@bot.message_handler(commands=['add'])
+def handle_add_word(message):
+    chat_id = message.chat.id
+    args = message.text.strip().split(' ', 1)
+    if len(args) != 2 or '|' not in args[1]:
+        bot.reply_to(message, "❗ Dùng: /add từ|nghĩa")
+        return
+    word, meaning = [x.strip() for x in args[1].split('|', 1)]
+    user_vocab.setdefault(chat_id, get_current_vocab(chat_id)).append((word, meaning))
+    bot.reply_to(message, f"✅ Đã thêm từ `{word}`.", parse_mode='Markdown')
+
+# Tải bộ từ hiện tại
+@bot.message_handler(commands=['download'])
+def handle_download(message):
+    chat_id = message.chat.id
+    vocab_list = get_current_vocab(chat_id)
+    content = '\n'.join(f"{w}|{m}" for w, m in vocab_list)
+    with tempfile.NamedTemporaryFile(delete=False, mode='w', encoding='utf-8', suffix='.txt') as f:
+        f.write(content)
+        temp_path = f.name
+    with open(temp_path, 'rb') as f:
+        bot.send_document(chat_id, f, caption="📥 Bộ từ hiện tại của bạn")
+    os.remove(temp_path)
+
 
 @bot.message_handler(commands=['help'])
 def handle_help(message):
