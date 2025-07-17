@@ -1,3 +1,8 @@
+import csv
+import re
+
+import pandas as pd
+
 from keep_alive import keep_alive
 keep_alive()
 
@@ -8,14 +13,13 @@ import tempfile
 from gtts import gTTS
 from collections import defaultdict, deque
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from googletrans import Translator
 
-API_KEY = "7214717305:AAEgdgUC6qBuRwQsCPRN7kTjtypWR_tgbIE"#os.getenv("B_API")
+translator = Translator()
+
+API_KEY = os.getenv("B_API")
 bot = telebot.TeleBot(API_KEY)
 
-# # Load vocab
-# with open('vocabulary.txt', encoding='utf-8') as f:
-#     lines = [line.strip() for line in f if '|' in line]
-# vocab = [tuple(line.split('|')) for line in lines]
 
 # Dữ liệu người dùng
 user_data = {}
@@ -28,6 +32,242 @@ dict_name = ""
 user_dicts = defaultdict(list)  # Temporary user dict storage
 selected_user_dict = {}         # Track which user selected their own dict
 
+#Tính năng chung
+#
+#
+#
+#
+
+
+@bot.message_handler(commands=['t'])
+def translate_text(message):
+    raw_text = message.text[3:].strip()
+
+    if not raw_text:
+        bot.reply_to(message, "❗ Hãy nhập nội dung cần dịch sau lệnh /t.\nVí dụ:\n/t good morning\nHow are you?")
+        return
+
+    # Tách thành từng dòng
+    lines = raw_text.splitlines()
+    translator = Translator()
+    translated_lines = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Làm sạch dòng khỏi emoji hoặc ký tự không cần thiết
+        cleaned_line = re.sub(r'[^\w\s\-\'\".,!?]', '', line, flags=re.UNICODE).strip()
+
+        if not cleaned_line:
+            continue
+
+        try:
+            result = translator.translate(cleaned_line, dest='vi')
+
+            if result.src == 'vi':
+                translated_lines.append(f"🟢 `{cleaned_line}` (Tiếng Việt)")
+            else:
+                translated_lines.append(f"🔤 `{cleaned_line}` → 📘 {result.text}")
+
+        except Exception as e:
+            translated_lines.append(f"⚠️ Lỗi dịch dòng: `{line}`")
+            print("Lỗi dịch:", e)
+
+    if translated_lines:
+        response = "\n".join(translated_lines)
+        bot.reply_to(message, response, parse_mode='Markdown')
+    else:
+        bot.reply_to(message, "⚠️ Không có dòng nào hợp lệ để dịch.")
+
+
+#code của quizz test
+#
+#
+#
+#
+# ✅ Tải dữ liệu khi khởi động bot
+quiz_df = pd.read_csv("test.tsv", sep="\t")  # ← đổi tên file nếu cần
+quiz_df.dropna(inplace=True)
+quiz_df["distractors"] = quiz_df["distractors"].apply(lambda x: x.split("|"))
+
+# ✅ Bộ nhớ cho từng người dùng
+user_sessions = {}
+
+def create_quiz_session(user_id, start_id=0, end_id=None):
+    session = {
+        "questions": [],
+        "index": 0,
+        "correct": 0,
+        "wrong": 0
+    }
+
+    filtered = quiz_df
+    if end_id is not None:
+        filtered = filtered[(quiz_df["id"] >= start_id) & (quiz_df["id"] <= end_id)]
+
+    session["questions"] = random.sample(filtered.to_dict("records"), len(filtered))
+    user_sessions[user_id] = session
+def send_question(bot, chat_id, user_id):
+    session = user_sessions[user_id]
+    if session["index"] >= len(session["questions"]):
+        total = session["correct"] + session["wrong"]
+        ratio = round(session["correct"] / total * 100, 2) if total > 0 else 0
+        bot.send_message(chat_id, f"✅ Kết thúc!\nĐúng: {session['correct']}\nSai: {session['wrong']}\nTỷ lệ: {ratio}%")
+        del user_sessions[user_id]
+        return
+
+    q = session["questions"][session["index"]]
+    choices = q["distractors"] + [q["solution"]]
+    random.shuffle(choices)
+
+    markup = InlineKeyboardMarkup()
+    for c in choices:
+        callback_data = f"quiz|{user_id}|{c}"
+        markup.add(InlineKeyboardButton(c, callback_data=callback_data))
+
+    # ✅ Hiển thị cả ID câu hỏi
+    bot.send_message(chat_id, f"[ID: {q['id']}] {q['gapped_text']}", reply_markup=markup)
+def handle_answer_quiz(bot, call):
+    _, user_id, selected = call.data.split("|")
+    user_id = int(user_id)
+    if user_id != call.from_user.id:
+        bot.answer_callback_query(call.id, "⛔ Không phải lượt của bạn!")
+        return
+
+    session = user_sessions.get(user_id)
+    if not session:
+        bot.answer_callback_query(call.id, "⛔ Phiên đã kết thúc.")
+        return
+
+    current_q = session["questions"][session["index"]]
+    correct_ans = current_q["solution"]
+    full_text = current_q["filled_text"]
+    qid = current_q["id"]
+
+    is_correct = selected == correct_ans
+    if is_correct:
+        session["correct"] += 1
+        result = "✅ Đúng!"
+    else:
+        session["wrong"] += 1
+        result = "❌ Sai!"
+
+    # ✅ Hiển thị chi tiết hơn
+    reply = (
+        f"[ID: {qid}] {result}\n"
+        f"🔘 Bạn chọn: {selected}\n"
+        f"✅ Đáp án đúng: {correct_ans}\n"
+        f"📝 Câu đầy đủ: {full_text}"
+    )
+
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    # Thống kê hiện tại
+    total = session["correct"] + session["wrong"]
+    ratio = round(session["correct"] / total * 100, 2) if total > 0 else 0
+
+    reply += f"\n\n📊 Thống kê hiện tại:\n✔️ Đúng: {session['correct']} | ❌ Sai: {session['wrong']} | 🎯 Tỷ lệ đúng: {ratio}%"
+
+    bot.send_message(call.message.chat.id, reply)
+
+    session["index"] += 1
+    send_question(bot, call.message.chat.id, user_id)
+
+def build_question_markup(qid, solution, distractors):
+    options = distractors + [solution]
+    random.shuffle(options)
+    markup = InlineKeyboardMarkup()
+    for opt in options:
+        markup.add(InlineKeyboardButton(opt, callback_data=f"ans:{qid}:{opt}"))
+    return markup
+@bot.message_handler(commands=['test'])
+def start_test(message):
+    parts = message.text.strip().split()
+    if len(parts) == 2:
+        arg = parts[1]
+        if "-" in arg:
+            try:
+                start, end = map(int, arg.split("-"))
+                create_quiz_session(message.from_user.id, start, end)
+                send_question(bot, message.chat.id, message.from_user.id)
+                return
+            except:
+                bot.send_message(message.chat.id, "❗ Định dạng không hợp lệ. Dùng: /test 20-30 hoặc /test 15")
+                return
+        else:
+            try:
+                qid = int(arg)
+                # ✅ Kiểm tra và tạo session cho đúng 1 câu hỏi
+                filtered = quiz_df[quiz_df["id"] == qid]
+                if filtered.empty:
+                    bot.send_message(message.chat.id, f"❗ Không tìm thấy câu hỏi với ID {qid}")
+                    return
+                session = {
+                    "questions": filtered.to_dict("records"),
+                    "index": 0,
+                    "correct": 0,
+                    "wrong": 0
+                }
+                user_sessions[message.from_user.id] = session
+                send_question(bot, message.chat.id, message.from_user.id)
+                return
+            except:
+                bot.send_message(message.chat.id, "❗ Sai định dạng. Dùng: /test 15 hoặc /test 20-30")
+                return
+    else:
+        create_quiz_session(message.from_user.id)
+        send_question(bot, message.chat.id, message.from_user.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quiz|"))
+def handle_quiz_callback(call):
+    handle_answer_quiz(bot, call)
+
+
+#code của vocab test
+#
+#
+#
+#
+#
+def send_next_question(chat_id):
+    session = user_sessions.get(chat_id)
+    if session is None or session["index"] >= len(session["questions"]):
+        correct = session["correct"]
+        wrong = session["wrong"]
+        total = correct + wrong
+        ratio = round(100 * correct / total, 2) if total > 0 else 0
+        bot.send_message(chat_id, f"✅ Đúng: {correct} ❌ Sai: {wrong} 🎯 Tỷ lệ: {ratio}%")
+        return
+
+    q = session["questions"][session["index"]]
+    markup = build_question_markup(q["id"], q["solution"], q["distractors"])
+    bot.send_message(chat_id, f"Câu {session['index']+1}:\n{q['gapped_text']}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ans:"))
+def handle_answer(call):
+    chat_id = call.message.chat.id
+    _, qid_str, user_answer = call.data.split(":", 2)
+    qid = int(qid_str)
+
+    session = user_sessions.get(chat_id)
+    if session is None:
+        return
+
+    question = next(q for q in session["questions"] if q["id"] == qid)
+
+    correct_answer = question["solution"]
+    is_correct = user_answer.strip() == correct_answer.strip()
+
+    if is_correct:
+        session["correct"] += 1
+        bot.send_message(chat_id, f"✅ Chính xác!\n{question['filled_text']}")
+    else:
+        session["wrong"] += 1
+        bot.send_message(chat_id, f"❌ Sai! Đáp án đúng: {correct_answer}\n{question['filled_text']}")
+
+    session["index"] += 1
+    send_next_question(chat_id)
 # --- Load vocabulary from file ---
 def load_dict(file_path):
     vocab = []
@@ -127,38 +367,63 @@ if os.path.exists(default_path):
     dict_name = default_dict_file
 @bot.message_handler(commands=['help'])
 def handle_help(message):
-    help_text = (
-        "📚 *Hướng dẫn sử dụng bot học từ vựng tiếng Anh*\n\n"
-        "🟢 **Bắt đầu luyện tập:**\n"
-        "`/go 1-100` – Luyện từ vựng từ dòng 1 đến 100 trong danh sách.\n"
-        "Bạn cần chọn đúng nghĩa của từ được hỏi. Sau mỗi câu có thể xem ví dụ sử dụng.\n\n"
+    help_text = """
+📚 *HƯỚNG DẪN SỬ DỤNG BOT HỌC TỪ VỰNG* 📚
 
-        "🔄 **Tùy chỉnh hiển thị câu ví dụ:**\n"
-        "`/setsentence 5 0` – Hiển thị 5 câu ví dụ, độ khó 0 (dễ).\n"
-        "`/setsentence 10 1` – Hiển thị 10 câu, độ khó 1 (khó).\n\n"
+───────────────────
+📂 *QUẢN LÝ TỪ ĐIỂN*  
+- `/listdict` → Xem các từ điển có sẵn  
+- `/selectdict 2` → Chọn từ điển số 2  
+- `/newdict` → Tạo từ điển cá nhân mới  
+- `/add hello|xin chào` → Thêm từ mới  
+- `/selectuserdict` → Sử dụng từ điển cá nhân  
+- `/download` → Tải về từ điển hiện tại
 
-        "🔊 **Âm thanh:**\n"
-        "`/mute` – Tắt phát âm từ.\n"
-        "`/unmute` – Bật phát âm từ.\n\n"
+───────────────────
+🟢 *LUYỆN TỪ VỰNG*  
+- `/go` → Luyện toàn bộ từ  
+- `/go 20-40` → Luyện từ dòng 20 đến 40  
+- Mỗi vòng chọn từ ngẫu nhiên, ưu tiên từ sai  
+- Hiển thị nghĩa, ví dụ, phát âm (nếu bật)
 
-        "📌 **Ưu tiên các từ sai nhiều:**\n"
-        "`/priority 3` – Ưu tiên hiển thị lại các từ sai, trọng số = 3.\n"
-        "`/nopriority` – Tắt ưu tiên.\n\n"
+───────────────────
+🧪 *KIỂM TRA TRẮC NGHIỆM*  
+- `/test` → Kiểm tra toàn bộ bộ câu hỏi  
+- `/test 10` → Làm 1 câu trắc nghiệm theo ID  
+- `/test 25-35` → Làm 10 câu từ dòng 25–35  
+- Trộn đáp án, hiển thị kết quả sau mỗi câu  
+- Thống kê tổng số đúng/sai, tỉ lệ %
 
-        "🔍 **Tìm câu ví dụ cho một từ hoặc cụm từ:**\n"
-        "`/find từ` – Tìm 5 câu dễ mặc định.\n"
-        "`/find từ số_câu` – Ví dụ: `/find look up 10`\n"
-        "`/find từ số_câu độ_khó` – Ví dụ: `/find look up 10 1`\n"
-        "- `độ_khó = 0`: dễ, `1`: khó\n"
-        "- Hỗ trợ tìm cả các từ có `-` hoặc có khoảng trắng như `check-in`, `check in`\n\n"
+───────────────────
+🎧 *ÂM THANH*  
+- `/mute` → Tắt phát âm từ  
+- `/unmute` → Bật lại phát âm
 
-        "📊 **Sau mỗi câu hỏi:**\n"
-        "- Bạn sẽ biết mình đúng/sai, kèm theo điểm số.\n"
-        "- Có thể xem thêm câu ví dụ bằng nút 📘 *Show usages*.\n\n"
+───────────────────
+📌 *ƯU TIÊN TỪ SAI*  
+- `/priority 3` → Ưu tiên từ sai nhiều gấp 3  
+- `/nopriority` → Tắt ưu tiên
 
-        "Chúc bạn học từ vựng hiệu quả! 💪"
-    )
+───────────────────
+📎 *TÙY CHỈNH VÍ DỤ*  
+- `/setsentence 5 0` → Hiển thị 5 câu dễ  
+- `/setsentence 10 1` → Hiển thị 10 câu khó  
+
+───────────────────
+🔍 *TÌM CÂU VÍ DỤ*  
+- `/find look up` → 5 câu ví dụ dễ  
+- `/find look up 10 1` → 10 câu khó
+
+───────────────────
+📊 *THỐNG KÊ*  
+- Sau mỗi câu: báo đúng/sai  
+- Kết thúc: hiện tổng số đúng/sai + tỷ lệ %
+
+───────────────────
+💪 *CHÚC BẠN HỌC TỐT!* 💪
+    """
     bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
+
 
 @bot.message_handler(commands=['start'])
 def greet(message):
