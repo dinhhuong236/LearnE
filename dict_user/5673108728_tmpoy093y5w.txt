@@ -1,4 +1,0 @@
-hello|xin chào
-thanks|cảm ơn
-sorry|xin lỗi
-bye|tạm biệt
