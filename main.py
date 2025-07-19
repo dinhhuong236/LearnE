@@ -19,7 +19,7 @@ from googletrans import Translator
 
 translator = Translator()
 
-API_KEY = "7214717305:AAEV0DJ7u7R5n5u-1nLjms0rrFzhx_xn1R0"#os.getenv("B_API")
+API_KEY = os.getenv("B_API")
 bot = telebot.TeleBot(API_KEY)
 
 # Dữ liệu người dùng
